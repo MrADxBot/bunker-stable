@@ -4,16 +4,9 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
-const USERS_FILE = __DIR__ . '/data/users.json';
+require_once __DIR__ . '/db.php';
+
 const MAX_USERNAME_LENGTH = 30;
-
-if (!is_dir(__DIR__ . '/data')) {
-    mkdir(__DIR__ . '/data', 0777, true);
-}
-
-if (!file_exists(USERS_FILE)) {
-    file_put_contents(USERS_FILE, "[]", LOCK_EX);
-}
 
 function respond(array $payload, int $statusCode = 200): void
 {
@@ -54,47 +47,24 @@ function hashPassword(string $password): string
     return base64_encode($password);
 }
 
-function readUsers(): array
-{
-    $contents = @file_get_contents(USERS_FILE);
-    if ($contents === false || trim($contents) === '') {
-        return [];
-    }
-
-    $decoded = json_decode($contents, true);
-    return is_array($decoded) ? $decoded : [];
-}
-
-function writeUsers(array $users): void
-{
-    $json = json_encode(array_values($users), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($json === false) {
-        respond(['ok' => false, 'error' => 'Не удалось сохранить пользователей'], 500);
-    }
-
-    if (file_put_contents(USERS_FILE, $json, LOCK_EX) === false) {
-        respond(['ok' => false, 'error' => 'Не удалось сохранить пользователей'], 500);
-    }
-}
-
 function publicUser(array $user): array
 {
     return [
         'username' => (string) ($user['username'] ?? ''),
         'role' => (string) ($user['role'] ?? 'player'),
-        'createdAt' => (string) ($user['createdAt'] ?? ''),
+        'createdAt' => (string) ($user['createdAt'] ?? $user['registered_at'] ?? ''),
     ];
 }
 
-function findUserIndex(array $users, string $username): int
+function findUser(string $username): ?array
 {
-    foreach ($users as $index => $user) {
-        if (strcasecmp((string) ($user['username'] ?? ''), $username) === 0) {
-            return (int) $index;
-        }
-    }
-
-    return -1;
+    $statement = bunkerDb()->prepare(
+        "SELECT user_id, username, password_hash, registered_at, COALESCE(role, 'player') AS role
+         FROM users WHERE lower(username) = lower(:username) LIMIT 1"
+    );
+    $statement->execute(['username' => $username]);
+    $user = $statement->fetch();
+    return $user === false ? null : $user;
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -108,9 +78,18 @@ if (!is_array($body)) {
 }
 
 $action = (string) ($body['action'] ?? '');
-$users = readUsers();
+
+try {
+    $db = bunkerDb();
+} catch (Throwable $error) {
+    respond(['ok' => false, 'error' => $error->getMessage()], 500);
+}
 
 if ($action === 'list') {
+    $users = $db->query(
+        "SELECT username, registered_at, COALESCE(role, 'player') AS role
+         FROM users ORDER BY registered_at, user_id"
+    )->fetchAll();
     respond([
         'ok' => true,
         'users' => array_map('publicUser', $users),
@@ -129,22 +108,23 @@ if ($action === 'register') {
         respond(['ok' => false, 'error' => 'Пароль не задан'], 422);
     }
 
-    if (findUserIndex($users, $username) !== -1) {
+    if (findUser($username) !== null) {
         respond(['ok' => false, 'error' => 'Такой логин уже существует'], 409);
     }
 
-    $users[] = [
+    $statement = $db->prepare(
+        'INSERT INTO users (username, password_hash, role) VALUES (:username, :password_hash, :role)'
+    );
+    $statement->execute([
         'username' => $username,
-        'passwordHash' => $passwordHash,
+        'password_hash' => $passwordHash,
         'role' => $role,
-        'createdAt' => date(DATE_ATOM),
-    ];
-
-    writeUsers($users);
+    ]);
+    $user = findUser($username);
 
     respond([
         'ok' => true,
-        'user' => publicUser(end($users) ?: []),
+        'user' => publicUser($user ?? []),
     ]);
 }
 
@@ -156,18 +136,18 @@ if ($action === 'login') {
         respond(['ok' => false, 'error' => 'Имя пользователя не задано'], 422);
     }
 
-    $index = findUserIndex($users, $username);
-    if ($index === -1) {
+    $user = findUser($username);
+    if ($user === null) {
         respond(['ok' => false, 'error' => 'Пользователь не найден'], 404);
     }
 
-    if (($users[$index]['passwordHash'] ?? '') !== $passwordHash) {
+    if (($user['password_hash'] ?? '') !== $passwordHash) {
         respond(['ok' => false, 'error' => 'Неверный пароль'], 401);
     }
 
     respond([
         'ok' => true,
-        'user' => publicUser($users[$index]),
+        'user' => publicUser($user),
     ]);
 }
 
@@ -175,29 +155,30 @@ if ($action === 'updateRole') {
     $username = sanitizeUsername((string) ($body['username'] ?? ''));
     $newRole = normalizeRole((string) ($body['newRole'] ?? 'player'));
 
-    $index = findUserIndex($users, $username);
-    if ($index === -1) {
+    $user = findUser($username);
+    if ($user === null) {
         respond(['ok' => false, 'error' => 'Пользователь не найден'], 404);
     }
 
-    $users[$index]['role'] = $newRole;
-    writeUsers($users);
+    $statement = $db->prepare('UPDATE users SET role = :role WHERE user_id = :user_id');
+    $statement->execute(['role' => $newRole, 'user_id' => $user['user_id']]);
+    $user = findUser($username);
 
     respond([
         'ok' => true,
-        'user' => publicUser($users[$index]),
+        'user' => publicUser($user ?? []),
     ]);
 }
 
 if ($action === 'delete') {
     $username = sanitizeUsername((string) ($body['username'] ?? ''));
-    $index = findUserIndex($users, $username);
-    if ($index === -1) {
+    $user = findUser($username);
+    if ($user === null) {
         respond(['ok' => false, 'error' => 'Пользователь не найден'], 404);
     }
 
-    array_splice($users, $index, 1);
-    writeUsers($users);
+    $statement = $db->prepare('DELETE FROM users WHERE user_id = :user_id');
+    $statement->execute(['user_id' => $user['user_id']]);
 
     respond(['ok' => true]);
 }

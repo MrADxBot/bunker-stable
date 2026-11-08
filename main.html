@@ -293,10 +293,18 @@
 
         if (tab === 'login') {
           if (tabLogin) tabLogin.classList.add('active');
-          if (panelLogin) panelLogin.classList.add('active');
+          if (panelLogin) {
+            panelLogin.classList.add('active');
+            panelLogin.style.display = 'block';
+          }
+          if (panelRegister) panelRegister.style.display = 'none';
         } else {
           if (tabRegister) tabRegister.classList.add('active');
-          if (panelRegister) panelRegister.classList.add('active');
+          if (panelRegister) {
+            panelRegister.classList.add('active');
+            panelRegister.style.display = 'block';
+          }
+          if (panelLogin) panelLogin.style.display = 'none';
         }
       }
 

@@ -4,16 +4,13 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+require_once __DIR__ . '/db.php';
+
 const ROOM_TTL_SECONDS = 10;
 const ROOM_CODE_LENGTH = 6;
 const MAX_PLAYERS = 12;
 const DEFAULT_GAME_MODE = 'classic';
 const ALLOWED_GAME_MODES = ['classic', 'nonclassic'];
-
-$dataDir = __DIR__ . '/data/rooms';
-if (!is_dir($dataDir)) {
-    mkdir($dataDir, 0777, true);
-}
 
 function respond(array $payload, int $statusCode = 200): void
 {
@@ -94,11 +91,6 @@ function makeUniqueUsername(string $username, array $members): string
     }
 }
 
-function roomFilePath(string $dataDir, string $roomCode): string
-{
-    return $dataDir . '/' . $roomCode . '.json';
-}
-
 function roomStatus(array $room): array
 {
     $game = isset($room['game']) && is_array($room['game']) ? $room['game'] : null;
@@ -135,16 +127,13 @@ function roomSummary(array $room): array
     ];
 }
 
-function loadRoomsSummary(string $dataDir): array
+function loadRoomsSummary(): array
 {
+    $db = bunkerDb();
     $rooms = [];
-    foreach (glob($dataDir . '/*.json') ?: [] as $filePath) {
-        $contents = @file_get_contents($filePath);
-        if ($contents === false || trim($contents) === '') {
-            continue;
-        }
-
-        $room = json_decode($contents, true);
+    $rows = $db->query('SELECT room_code, state_json FROM bunker_rooms ORDER BY updated_at DESC')->fetchAll();
+    foreach ($rows as $row) {
+        $room = json_decode((string) $row['state_json'], true);
         if (!is_array($room)) {
             continue;
         }
@@ -154,17 +143,15 @@ function loadRoomsSummary(string $dataDir): array
         $changed = $changed || $playersChanged;
 
         if (empty($room['members'])) {
-            @unlink($filePath);
+            $statement = $db->prepare('DELETE FROM bunker_rooms WHERE room_code = :room_code');
+            $statement->execute(['room_code' => $row['room_code']]);
             continue;
         }
 
         if ($changed) {
             $room['version'] = (int) ($room['version'] ?? 0) + 1;
             $room['updatedAt'] = time();
-            @file_put_contents(
-                $filePath,
-                json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)
-            );
+            saveRoom($room);
         }
 
         $rooms[] = roomSummary($room);
@@ -180,32 +167,55 @@ function loadRoomsSummary(string $dataDir): array
     return $rooms;
 }
 
-function withRoomLock(string $filePath, callable $handler)
+function loadRoom(string $roomCode): ?array
 {
-    $handle = fopen($filePath, 'c+');
-    if ($handle === false) {
-        respond(['ok' => false, 'error' => 'Не удалось открыть файл комнаты'], 500);
+    $statement = bunkerDb()->prepare('SELECT state_json FROM bunker_rooms WHERE room_code = :room_code');
+    $statement->execute(['room_code' => $roomCode]);
+    $row = $statement->fetch();
+    if ($row === false) {
+        return null;
     }
 
+    $room = json_decode((string) $row['state_json'], true);
+    return is_array($room) ? $room : null;
+}
+
+function saveRoom(array $room): void
+{
+    $json = json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        throw new RuntimeException('Не удалось сериализовать комнату');
+    }
+
+    $statement = bunkerDb()->prepare(
+        'UPDATE bunker_rooms SET state_json = :state_json, updated_at = :updated_at WHERE room_code = :room_code'
+    );
+    $statement->execute([
+        'state_json' => $json,
+        'updated_at' => time(),
+        'room_code' => (string) ($room['code'] ?? ''),
+    ]);
+}
+
+function withRoomLock(string $roomCode, callable $handler)
+{
+    $db = bunkerDb();
+    $db->beginTransaction();
     try {
-        if (!flock($handle, LOCK_EX)) {
-            respond(['ok' => false, 'error' => 'Не удалось заблокировать комнату'], 500);
+        $room = loadRoom($roomCode);
+        if ($room === null) {
+            $db->rollBack();
+            respond(['ok' => false, 'error' => 'Комната не найдена'], 404);
         }
-
-        $contents = stream_get_contents($handle);
-        $room = [];
-        if ($contents !== false && trim($contents) !== '') {
-            $decoded = json_decode($contents, true);
-            if (is_array($decoded)) {
-                $room = $decoded;
-            }
-        }
-
-        $result = $handler($room, $handle);
+        $result = $handler($room, null);
+        saveRoom($room);
+        $db->commit();
         return $result;
-    } finally {
-        flock($handle, LOCK_UN);
-        fclose($handle);
+    } catch (Throwable $error) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $error;
     }
 }
 
@@ -863,6 +873,12 @@ if (!is_array($body)) {
 
 $action = (string) ($body['action'] ?? '');
 
+try {
+    bunkerDb();
+} catch (Throwable $error) {
+    respond(['ok' => false, 'error' => $error->getMessage()], 500);
+}
+
 if ($action === 'create') {
     $username = sanitizeUsername((string) ($body['username'] ?? ''));
     $gameMode = (string) ($body['gameMode'] ?? DEFAULT_GAME_MODE);
@@ -880,7 +896,7 @@ if ($action === 'create') {
     $roomCode = '';
     for ($i = 0; $i < 30; $i++) {
         $candidate = randomCode(ROOM_CODE_LENGTH);
-        if (!file_exists(roomFilePath($dataDir, $candidate))) {
+        if (loadRoom($candidate) === null) {
             $roomCode = $candidate;
             break;
         }
@@ -919,11 +935,20 @@ if ($action === 'create') {
 
     syncPlayersFromMembers($room);
 
-    $filePath = roomFilePath($dataDir, $roomCode);
-    $json = json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($json === false || file_put_contents($filePath, $json, LOCK_EX) === false) {
+    $statement = bunkerDb()->prepare(
+        'INSERT INTO bunker_rooms (room_code, state_json, created_at, updated_at)
+         VALUES (:room_code, :state_json, :created_at, :updated_at)'
+    );
+    $json = json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
         respond(['ok' => false, 'error' => 'Не удалось сохранить комнату'], 500);
     }
+    $statement->execute([
+        'room_code' => $roomCode,
+        'state_json' => $json,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
 
     respond([
         'ok' => true,
@@ -936,7 +961,7 @@ if ($action === 'create') {
 if ($action === 'list') {
     respond([
         'ok' => true,
-        'rooms' => loadRoomsSummary($dataDir),
+        'rooms' => loadRoomsSummary(),
     ]);
 }
 
@@ -950,8 +975,7 @@ if ($roomCode === '' || strlen($roomCode) !== ROOM_CODE_LENGTH) {
     respond(['ok' => false, 'error' => 'Неверный код комнаты'], 422);
 }
 
-$filePath = roomFilePath($dataDir, $roomCode);
-if (!file_exists($filePath)) {
+if (loadRoom($roomCode) === null) {
     respond(['ok' => false, 'error' => 'Комната не найдена'], 404);
 }
 
@@ -962,7 +986,7 @@ if ($action === 'join') {
     }
 
     $clientId = makeClientId();
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($roomCode, $username, $clientId, $body) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($roomCode, $username, $clientId, $body) {
         cleanupInactiveMembers($room);
 
         // Удаляем старые записи этого же пользователя
@@ -1005,10 +1029,6 @@ if ($action === 'join') {
         $room['version']++;
         $room['updatedAt'] = time();
 
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
-
         return [
             'ok' => true,
             'clientId' => $clientId,
@@ -1026,7 +1046,7 @@ if ($action === 'poll') {
         respond(['ok' => false, 'error' => 'clientId обязателен'], 422);
     }
 
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($clientId) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($clientId) {
         $changed = cleanupInactiveMembers($room);
         $exists = touchMember($room, $clientId);
         if (!$exists) {
@@ -1038,10 +1058,6 @@ if ($action === 'poll') {
 
         $room['version'] = (int) ($room['version'] ?? 0) + ($changed ? 1 : 0);
         $room['updatedAt'] = time();
-
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 
         return [
             'ok' => true,
@@ -1060,7 +1076,7 @@ if ($action === 'setReady') {
         respond(['ok' => false, 'error' => 'clientId обязателен'], 422);
     }
 
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($clientId, $ready) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($clientId, $ready) {
         cleanupInactiveMembers($room);
 
         $updated = false;
@@ -1078,10 +1094,6 @@ if ($action === 'setReady') {
 
         $room['version'] = (int) ($room['version'] ?? 0) + 1;
         $room['updatedAt'] = time();
-
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 
         return [
             'ok' => true,
@@ -1107,7 +1119,7 @@ if ($action === 'startGame') {
         respond(['ok' => false, 'error' => 'Некорректные данные старта игры'], 422);
     }
 
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($clientId, $game) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($clientId, $game) {
         cleanupInactiveMembers($room);
 
         if (!touchMember($room, $clientId)) {
@@ -1133,10 +1145,6 @@ if ($action === 'startGame') {
         $room['version'] = (int) ($room['version'] ?? 0) + 1;
         $room['updatedAt'] = time();
 
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
-
         return [
             'ok' => true,
             'room' => roomPayload($room),
@@ -1158,7 +1166,7 @@ if ($action === 'gameAction') {
         $payload = [];
     }
 
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($clientId, $type, $payload) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($clientId, $type, $payload) {
         cleanupInactiveMembers($room);
 
         if (!touchMember($room, $clientId)) {
@@ -1186,10 +1194,6 @@ if ($action === 'gameAction') {
         $room['version'] = (int) ($room['version'] ?? 0) + 1;
         $room['updatedAt'] = time();
 
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
-
         return [
             'ok' => true,
             'room' => roomPayload($room),
@@ -1197,7 +1201,8 @@ if ($action === 'gameAction') {
     });
 
     if (!empty($result['deleteRoom'])) {
-        @unlink($filePath);
+        $statement = bunkerDb()->prepare('DELETE FROM bunker_rooms WHERE room_code = :room_code');
+        $statement->execute(['room_code' => $roomCode]);
         respond(['ok' => true, 'deleted' => true]);
     }
 
@@ -1210,7 +1215,7 @@ if ($action === 'leave') {
         respond(['ok' => false, 'error' => 'clientId обязателен'], 422);
     }
 
-    $result = withRoomLock($filePath, static function (array $room, $handle) use ($clientId) {
+    $result = withRoomLock($roomCode, static function (array &$room, $handle) use ($clientId) {
         cleanupInactiveMembers($room);
 
         $room['members'] = array_values(array_filter($room['members'] ?? [], static function ($member) use ($clientId) {
@@ -1241,10 +1246,6 @@ if ($action === 'leave') {
         $room['version'] = (int) ($room['version'] ?? 0) + 1;
         $room['updatedAt'] = time();
 
-        rewind($handle);
-        ftruncate($handle, 0);
-        fwrite($handle, json_encode($room, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
-
         return [
             'ok' => true,
             'room' => roomPayload($room),
@@ -1252,7 +1253,8 @@ if ($action === 'leave') {
     });
 
     if (!empty($result['deleteRoom'])) {
-        @unlink($filePath);
+        $statement = bunkerDb()->prepare('DELETE FROM bunker_rooms WHERE room_code = :room_code');
+        $statement->execute(['room_code' => $roomCode]);
         respond(['ok' => true, 'deleted' => true]);
     }
 
