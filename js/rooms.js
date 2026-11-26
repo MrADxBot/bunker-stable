@@ -255,11 +255,14 @@ const BunkerRooms = (() => {
     return getState();
   }
 
-  async function sendMessage(message) {
+  async function sendMessage(message, recipientMemberId = "") {
     const text = String(message || "").trim();
     if (!text) throw new Error("Введите сообщение");
 
-    return gameAction("sendMessage", { message: text });
+    return gameAction("sendMessage", {
+      message: text,
+      recipientMemberId: String(recipientMemberId || "").trim(),
+    });
   }
 
   function getState() {

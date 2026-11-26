@@ -337,6 +337,16 @@
             transition: 0.2s;
             min-width: 0;
         }
+        .chat-input-area select {
+            max-width: 220px;
+            min-width: 160px;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: #171717;
+            color: #ffffff;
+            font-family: 'Manrope', sans-serif;
+        }
         .chat-input-area input:focus {
             border-color: #FFA600;
             box-shadow: 0 0 12px rgba(255, 166, 0, 0.15);
@@ -586,6 +596,9 @@
             <div class="chat-message">Сообщений пока нет</div>
         </div>
         <form class="chat-input-area" id="chatForm">
+            <select id="chatRecipient" aria-label="Получатель сообщения">
+                <option value="">Всем участникам</option>
+            </select>
             <input type="text" id="chatInput" maxlength="200" placeholder="Введите сообщение..." aria-label="Сообщение" required>
             <button class="btn btn-primary" id="sendChatBtn" type="submit">Отправить</button>
         </form>
@@ -732,6 +745,7 @@ function updateRoomData(roomData) {
     currentRoom.gameMode = roomData.gameMode || 'classic';
     currentRoom.members = roomData.members || [];
     currentRoom.chat = roomData.chat || [];
+    updateChatRecipientOptions();
     
     const currentMember = currentRoom.members.find(m => m.clientId === currentRoom.clientId);
     currentRoom.isHost = currentMember?.isHost || false;
@@ -801,28 +815,28 @@ function renderPlayersList() {
                     ${member.isHost ? '<span class="player-host-badge">Хост</span>' : ''}
                     ${isCurrentUser ? '<span style="font-size:0.7rem; color:#888;"> (Вы)</span>' : ''}
                 </div>
-                ${showKickButton ? `<button class="kick-btn" data-client-id="${member.clientId}">✕</button>` : ''}
+                ${showKickButton ? `<button class="kick-btn" data-member-id="${member.memberId}">✕</button>` : ''}
             </div>
         `;
     }).join("");
     
     document.querySelectorAll(".kick-btn").forEach(btn => {
         btn.addEventListener("click", async (e) => {
-            const clientId = btn.dataset.clientId;
+            const memberId = btn.dataset.memberId;
             if (confirm("Выгнать игрока?")) {
-                await kickPlayer(clientId);
+                await kickPlayer(memberId);
             }
         });
     });
 }
 
-async function kickPlayer(clientId) {
+async function kickPlayer(memberId) {
     try {
         await apiRequest("gameAction", {
             roomCode: currentRoom.code,
             clientId: currentRoom.clientId,
             type: "kickPlayer",
-            payload: { targetClientId: clientId }
+            payload: { targetMemberId: memberId }
         });
         showNotification("Игрок выгнан", "success");
     } catch (error) {
@@ -845,13 +859,39 @@ function renderChat() {
         return;
     }
 
-    container.innerHTML = chat.map(msg => `
+    container.innerHTML = chat.map(msg => {
+        const privateLabel = msg.private
+            ? (msg.isMine
+                ? `Лично → ${escapeHtml(msg.recipientUsername)}`
+                : `Личное от ${escapeHtml(msg.username)}`)
+            : "";
+        return `
         <div class="chat-message">
-            <strong>${escapeHtml(msg.username)}</strong>: ${escapeHtml(msg.message)}
+            <strong>${escapeHtml(msg.username)}</strong>${privateLabel ? ` <small>(${privateLabel})</small>` : ""}: ${escapeHtml(msg.message)}
         </div>
-    `).join("");
+    `;
+    }).join("");
     container.dataset.chatSignature = signature;
     if (wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+
+function updateChatRecipientOptions() {
+    const select = $("chatRecipient");
+    if (!select) return;
+
+    const selectedClientId = select.value;
+    select.innerHTML = '<option value="">Всем участникам</option>';
+    currentRoom.members.forEach(member => {
+        if (member.clientId === currentRoom.clientId) return;
+        const option = document.createElement("option");
+        option.value = member.memberId;
+        option.textContent = `Лично: ${member.username}`;
+        select.appendChild(option);
+    });
+
+    if (Array.from(select.options).some(option => option.value === selectedClientId)) {
+        select.value = selectedClientId;
+    }
 }
 
 async function sendMessage() {
@@ -864,7 +904,10 @@ async function sendMessage() {
             roomCode: currentRoom.code,
             clientId: currentRoom.clientId,
             type: "sendMessage",
-            payload: { message: message }
+            payload: {
+                message: message,
+                recipientMemberId: $("chatRecipient").value
+            }
         });
         input.value = "";
     } catch (error) {

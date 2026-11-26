@@ -352,6 +352,9 @@
       <h2 class="section-title">Чат комнаты</h2>
       <div class="room-chat-messages" id="room-chat-messages" role="log" aria-live="polite"></div>
       <form class="room-chat-form" id="room-chat-form">
+        <select id="room-chat-recipient" aria-label="Получатель сообщения">
+          <option value="">Всем участникам</option>
+        </select>
         <input id="room-chat-input" type="text" maxlength="200" autocomplete="off" placeholder="Введите сообщение..." aria-label="Сообщение" required />
         <button class="btn btn-primary" type="submit">Отправить</button>
       </form>

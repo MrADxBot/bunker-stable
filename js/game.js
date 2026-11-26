@@ -182,12 +182,33 @@ const BunkerGame = (() => {
     return members.every((member) => Boolean(member && member.ready));
   }
 
-  function renderRoomChat(messages, connected = isConnectedRoom()) {
+  function updateRoomChatRecipients(members) {
+    const select = document.getElementById("room-chat-recipient");
+    if (!select) return;
+
+    const previousRecipient = select.value;
+    const room = getRoomState();
+    select.innerHTML = '<option value="">Всем участникам</option>';
+    (Array.isArray(members) ? members : []).forEach((member) => {
+      if (member.clientId === room.clientId) return;
+      const option = document.createElement("option");
+      option.value = member.memberId;
+      option.textContent = `Лично: ${member.username}`;
+      select.appendChild(option);
+    });
+
+    if (Array.from(select.options).some((option) => option.value === previousRecipient)) {
+      select.value = previousRecipient;
+    }
+  }
+
+  function renderRoomChat(messages, members, connected = isConnectedRoom()) {
     const panel = document.getElementById("room-chat-panel");
     const container = document.getElementById("room-chat-messages");
     if (!panel || !container) return;
 
     panel.classList.toggle("connected", connected);
+    updateRoomChatRecipients(members);
     if (!connected) {
       container.textContent = "";
       delete container.dataset.chatSignature;
@@ -214,6 +235,13 @@ const BunkerGame = (() => {
         const username = document.createElement("strong");
         username.textContent = String(message.username || "");
         row.appendChild(username);
+        if (message.private) {
+          const privateLabel = document.createElement("small");
+          privateLabel.textContent = message.isMine
+            ? ` (Лично → ${String(message.recipientUsername || "")})`
+            : ` (Личное от ${String(message.username || "")})`;
+          row.appendChild(privateLabel);
+        }
         row.appendChild(document.createTextNode(`: ${String(message.message || "")}`));
         container.appendChild(row);
       });
@@ -228,9 +256,10 @@ const BunkerGame = (() => {
     const input = document.getElementById("room-chat-input");
     const message = input.value.trim();
     if (!message) return;
+    const recipientMemberId = document.getElementById("room-chat-recipient").value;
 
     try {
-      await window.BunkerRooms.sendMessage(message);
+      await window.BunkerRooms.sendMessage(message, recipientMemberId);
       input.value = "";
       input.focus();
     } catch (err) {
@@ -510,14 +539,14 @@ const BunkerGame = (() => {
         } else if (isConnectedRoom() && state.phase !== "setup") {
           applyRemoteLobbyState(payload.players || []);
         }
-        renderRoomChat(payload.chat, true);
+        renderRoomChat(payload.chat, payload.members, true);
         renderRoomState();
       },
       onError: (message) => {
         showNotification(message || "Ошибка комнаты", "warning");
       },
       onDisconnected: () => {
-        renderRoomChat([], false);
+        renderRoomChat([], [], false);
         if (state.phase === "setup") {
           setPlayerNames([]);
         }

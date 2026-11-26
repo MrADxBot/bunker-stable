@@ -37,6 +37,11 @@ function makeClientId(): string
     return bin2hex(random_bytes(16));
 }
 
+function publicMemberId(string $clientId): string
+{
+    return hash('sha256', $clientId);
+}
+
 function sanitizeRoomCode(string $roomCode): string
 {
     return strtoupper(preg_replace('/[^A-Z0-9]/', '', $roomCode));
@@ -601,18 +606,18 @@ function applyGameAction(array &$room, string $clientId, string $type, array $pa
             return 'Только хост может выгнать игрока';
         }
 
-        $targetClientId = (string) ($payload['targetClientId'] ?? '');
-        if ($targetClientId === '') {
+        $targetMemberId = trim((string) ($payload['targetMemberId'] ?? ''));
+        if ($targetMemberId === '') {
             return 'Не указан игрок для выгона';
         }
 
-        if ($targetClientId === $clientId) {
+        if ($targetMemberId === publicMemberId($clientId)) {
             return 'Нельзя выгнать самого себя';
         }
 
         $targetIndex = null;
         foreach ($room['members'] as $idx => $member) {
-            if ((string) ($member['clientId'] ?? '') === $targetClientId) {
+            if (publicMemberId((string) ($member['clientId'] ?? '')) === $targetMemberId) {
                 $targetIndex = $idx;
                 break;
             }
@@ -643,14 +648,37 @@ function applyGameAction(array &$room, string $clientId, string $type, array $pa
             return null;
         }
 
+        $recipientMemberId = trim((string) ($payload['recipientMemberId'] ?? ''));
+        $recipient = null;
+        $recipientClientId = '';
+        if ($recipientMemberId !== '') {
+            foreach (($room['members'] ?? []) as $roomMember) {
+                $memberClientId = (string) ($roomMember['clientId'] ?? '');
+                if ($memberClientId !== '' && publicMemberId($memberClientId) === $recipientMemberId) {
+                    $recipient = $roomMember;
+                    $recipientClientId = $memberClientId;
+                    break;
+                }
+            }
+            if ($recipient === null) {
+                return 'Получатель не состоит в комнате';
+            }
+            if ($recipientClientId === $clientId) {
+                return 'Нельзя отправить личное сообщение самому себе';
+            }
+        }
+
         if (!isset($room['chat']) || !is_array($room['chat'])) {
             $room['chat'] = [];
         }
 
         $room['chat'][] = [
             'timestamp' => time(),
+            'senderClientId' => $clientId,
             'username' => (string) ($member['username'] ?? ''),
             'message' => utf8Substr($message, 0, 200),
+            'recipientClientId' => $recipientClientId,
+            'recipientUsername' => $recipient === null ? '' : (string) ($recipient['username'] ?? ''),
         ];
 
         if (count($room['chat']) > 100) {
@@ -836,16 +864,61 @@ function applyGameAction(array &$room, string $clientId, string $type, array $pa
     return 'Неизвестное действие игры';
 }
 
-function roomPayload(array $room): array
+function roomPayload(array $room, string $viewerClientId = ''): array
 {
     $hostId = (string) ($room['hostId'] ?? '');
     $members = [];
+    $chat = [];
+    $game = isset($room['game']) && is_array($room['game']) ? $room['game'] : null;
+    if ($game !== null) {
+        $voterChoices = isset($game['voterChoices']) && is_array($game['voterChoices'])
+            ? $game['voterChoices']
+            : [];
+        $game['voterChoices'] = [];
+        if ($viewerClientId !== '' && array_key_exists($viewerClientId, $voterChoices)) {
+            $game['voterChoices'][$viewerClientId] = $voterChoices[$viewerClientId];
+        }
+    }
+
     foreach (($room['members'] ?? []) as $member) {
-        $members[] = [
-            'clientId' => (string) ($member['clientId'] ?? ''),
+        $memberClientId = (string) ($member['clientId'] ?? '');
+        $memberPayload = [
+            'memberId' => publicMemberId($memberClientId),
             'username' => (string) ($member['username'] ?? ''),
-            'isHost' => (string) ($member['clientId'] ?? '') === $hostId,
+            'isHost' => $memberClientId === $hostId,
             'ready' => !empty($member['ready']),
+        ];
+        if ($memberClientId !== '' && $memberClientId === $viewerClientId) {
+            $memberPayload['clientId'] = $memberClientId;
+        }
+        $members[] = $memberPayload;
+    }
+
+    foreach (($room['chat'] ?? []) as $message) {
+        if (!is_array($message)) {
+            continue;
+        }
+
+        $recipientClientId = (string) ($message['recipientClientId'] ?? '');
+        $senderClientId = (string) ($message['senderClientId'] ?? '');
+        if (
+            $recipientClientId !== ''
+            && (
+                $viewerClientId === ''
+                || ($viewerClientId !== $senderClientId && $viewerClientId !== $recipientClientId)
+            )
+        ) {
+            continue;
+        }
+        $chat[] = [
+            'timestamp' => (int) ($message['timestamp'] ?? 0),
+            'username' => (string) ($message['username'] ?? ''),
+            'message' => (string) ($message['message'] ?? ''),
+            'private' => $recipientClientId !== '',
+            'isMine' => $senderClientId !== '' && $viewerClientId === $senderClientId,
+            'recipientUsername' => $recipientClientId === ''
+                ? ''
+                : (string) ($message['recipientUsername'] ?? ''),
         ];
     }
 
@@ -856,8 +929,8 @@ function roomPayload(array $room): array
         'gameMode' => $room['gameMode'] ?? DEFAULT_GAME_MODE,
         'players' => array_values($room['players'] ?? []),
         'members' => $members,
-        'game' => isset($room['game']) && is_array($room['game']) ? $room['game'] : null,
-        'chat' => $room['chat'] ?? [],
+        'game' => $game,
+        'chat' => $chat,
     ];
 }
 
@@ -954,7 +1027,7 @@ if ($action === 'create') {
         'ok' => true,
         'clientId' => $clientId,
         'roomCode' => $roomCode,
-        'room' => roomPayload($room),
+        'room' => roomPayload($room, $clientId),
     ]);
 }
 
@@ -1033,7 +1106,7 @@ if ($action === 'join') {
             'ok' => true,
             'clientId' => $clientId,
             'username' => $finalUsername,
-            'room' => roomPayload($room),
+            'room' => roomPayload($room, $clientId),
         ];
     });
 
@@ -1061,7 +1134,7 @@ if ($action === 'poll') {
 
         return [
             'ok' => true,
-            'room' => roomPayload($room),
+            'room' => roomPayload($room, $clientId),
         ];
     });
 
@@ -1097,7 +1170,7 @@ if ($action === 'setReady') {
 
         return [
             'ok' => true,
-            'room' => roomPayload($room),
+            'room' => roomPayload($room, $clientId),
         ];
     });
 
@@ -1147,7 +1220,7 @@ if ($action === 'startGame') {
 
         return [
             'ok' => true,
-            'room' => roomPayload($room),
+            'room' => roomPayload($room, $clientId),
         ];
     });
 
@@ -1187,7 +1260,7 @@ if ($action === 'gameAction') {
             return [
                 'ok' => false,
                 'error' => $error,
-                'room' => roomPayload($room),
+                'room' => roomPayload($room, $clientId),
             ];
         }
 
@@ -1196,7 +1269,7 @@ if ($action === 'gameAction') {
 
         return [
             'ok' => true,
-            'room' => roomPayload($room),
+            'room' => roomPayload($room, $clientId),
         ];
     });
 
