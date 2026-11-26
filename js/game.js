@@ -182,6 +182,62 @@ const BunkerGame = (() => {
     return members.every((member) => Boolean(member && member.ready));
   }
 
+  function renderRoomChat(messages, connected = isConnectedRoom()) {
+    const panel = document.getElementById("room-chat-panel");
+    const container = document.getElementById("room-chat-messages");
+    if (!panel || !container) return;
+
+    panel.classList.toggle("connected", connected);
+    if (!connected) {
+      container.textContent = "";
+      delete container.dataset.chatSignature;
+      return;
+    }
+
+    const chat = Array.isArray(messages) ? messages : [];
+    const signature = JSON.stringify(chat);
+    if (container.dataset.chatSignature === signature) return;
+
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 32;
+    container.textContent = "";
+
+    if (chat.length === 0) {
+      const emptyMessage = document.createElement("div");
+      emptyMessage.className = "room-chat-message";
+      emptyMessage.textContent = "Сообщений пока нет";
+      container.appendChild(emptyMessage);
+    } else {
+      chat.forEach((message) => {
+        const row = document.createElement("div");
+        row.className = "room-chat-message";
+
+        const username = document.createElement("strong");
+        username.textContent = String(message.username || "");
+        row.appendChild(username);
+        row.appendChild(document.createTextNode(`: ${String(message.message || "")}`));
+        container.appendChild(row);
+      });
+    }
+
+    container.dataset.chatSignature = signature;
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+  }
+
+  async function sendRoomChat(event) {
+    event.preventDefault();
+    const input = document.getElementById("room-chat-input");
+    const message = input.value.trim();
+    if (!message) return;
+
+    try {
+      await window.BunkerRooms.sendMessage(message);
+      input.value = "";
+      input.focus();
+    } catch (err) {
+      showNotification(err.message || "Не удалось отправить сообщение", "error");
+    }
+  }
+
   function updateReadyControls(room) {
     const wrap = document.getElementById("room-ready-wrap");
     const checkbox = document.getElementById("room-ready-checkbox");
@@ -454,12 +510,14 @@ const BunkerGame = (() => {
         } else if (isConnectedRoom() && state.phase !== "setup") {
           applyRemoteLobbyState(payload.players || []);
         }
+        renderRoomChat(payload.chat, true);
         renderRoomState();
       },
       onError: (message) => {
         showNotification(message || "Ошибка комнаты", "warning");
       },
       onDisconnected: () => {
+        renderRoomChat([], false);
         if (state.phase === "setup") {
           setPlayerNames([]);
         }
@@ -482,6 +540,8 @@ const BunkerGame = (() => {
       event.stopPropagation();
       leaveRoomFromUi();
     });
+
+    document.getElementById("room-chat-form")?.addEventListener("submit", sendRoomChat);
 
     const readyCheckbox = document.getElementById("room-ready-checkbox");
     if (readyCheckbox) {

@@ -346,6 +346,19 @@
   </div>
 </div>
 
+<section class="room-chat-panel" id="room-chat-panel" aria-label="Чат комнаты">
+  <div class="container">
+    <div class="card">
+      <h2 class="section-title">Чат комнаты</h2>
+      <div class="room-chat-messages" id="room-chat-messages" role="log" aria-live="polite"></div>
+      <form class="room-chat-form" id="room-chat-form">
+        <input id="room-chat-input" type="text" maxlength="200" autocomplete="off" placeholder="Введите сообщение..." aria-label="Сообщение" required />
+        <button class="btn btn-primary" type="submit">Отправить</button>
+      </form>
+    </div>
+  </div>
+</section>
+
 <script src="js/data.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/rooms.js"></script>

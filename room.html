@@ -115,7 +115,7 @@
             gap: 25px;
         }
         .lobby-grid {
-            grid-template-columns: 1fr 350px;
+            grid-template-columns: 1fr;
         }
         .game-grid {
             grid-template-columns: 280px 1fr;
@@ -134,6 +134,9 @@
             border-radius: 16px;
             padding: 22px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+        .room-chat-panel {
+            margin-top: 25px;
         }
         .players-card h3,
         .chat-card h3,
@@ -532,16 +535,6 @@
                 <button class="btn btn-secondary leave-btn" id="leaveRoomBtn">Выйти из комнаты</button>
             </div>
 
-            <div class="chat-card">
-                <h3>Чат</h3>
-                <div class="chat-messages" id="chatMessages">
-                    <div class="chat-message">Сообщений пока нет</div>
-                </div>
-                <div class="chat-input-area">
-                    <input type="text" id="chatInput" placeholder="Введите сообщение...">
-                    <button class="btn btn-primary" id="sendChatBtn">Отправить</button>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -585,6 +578,17 @@
             <button class="btn btn-primary" id="playAgainBtn">Играть снова</button>
             <button class="btn btn-secondary" id="backToLobbyBtn">Вернуться в лобби</button>
         </div>
+    </div>
+
+    <div class="chat-card room-chat-panel" id="roomChatPanel" style="display: none;">
+        <h3>Чат комнаты</h3>
+        <div class="chat-messages" id="chatMessages" role="log" aria-live="polite">
+            <div class="chat-message">Сообщений пока нет</div>
+        </div>
+        <form class="chat-input-area" id="chatForm">
+            <input type="text" id="chatInput" maxlength="200" placeholder="Введите сообщение..." aria-label="Сообщение" required>
+            <button class="btn btn-primary" id="sendChatBtn" type="submit">Отправить</button>
+        </form>
     </div>
 </main>
 
@@ -731,6 +735,8 @@ function updateRoomData(roomData) {
     
     const currentMember = currentRoom.members.find(m => m.clientId === currentRoom.clientId);
     currentRoom.isHost = currentMember?.isHost || false;
+    const chatPanel = $("roomChatPanel");
+    if (chatPanel) chatPanel.style.display = "block";
     
     // Проверяем, началась ли игра
     if (roomData.game && roomData.game.phase && roomData.game.phase !== 'setup') {
@@ -743,9 +749,9 @@ function updateRoomData(roomData) {
         showGameScreen();
     } else {
         renderPlayersList();
-        renderChat();
         updateReadyUI();
     }
+    renderChat();
     
     const modeBadge = $("gameModeBadge");
     if (modeBadge) {
@@ -827,19 +833,25 @@ async function kickPlayer(clientId) {
 function renderChat() {
     const container = $("chatMessages");
     if (!container) return;
-    
-    if (!currentRoom.chat || currentRoom.chat.length === 0) {
+
+    const chat = Array.isArray(currentRoom.chat) ? currentRoom.chat : [];
+    const signature = JSON.stringify(chat);
+    if (container.dataset.chatSignature === signature) return;
+
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 32;
+    if (chat.length === 0) {
         container.innerHTML = '<div class="chat-message">Сообщений пока нет</div>';
+        container.dataset.chatSignature = signature;
         return;
     }
-    
-    container.innerHTML = currentRoom.chat.map(msg => `
+
+    container.innerHTML = chat.map(msg => `
         <div class="chat-message">
             <strong>${escapeHtml(msg.username)}</strong>: ${escapeHtml(msg.message)}
         </div>
     `).join("");
-    
-    container.scrollTop = container.scrollHeight;
+    container.dataset.chatSignature = signature;
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
 }
 
 async function sendMessage() {
@@ -1224,8 +1236,10 @@ async function initRoom() {
 }
 
 function bindEvents() {
-    $("sendChatBtn")?.addEventListener("click", sendMessage);
-    $("chatInput")?.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+    $("chatForm")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        sendMessage();
+    });
     $("readyCheckbox")?.addEventListener("change", toggleReady);
     $("startGameBtn")?.addEventListener("click", startGame);
     $("leaveRoomBtn")?.addEventListener("click", leaveRoom);

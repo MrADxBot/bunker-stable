@@ -13,6 +13,7 @@ const BunkerRooms = (() => {
     members: [],
     players: [],
     game: null,
+    chat: [],
     isHost: false,
     pollTimer: null,
     callbacks: {
@@ -60,6 +61,7 @@ const BunkerRooms = (() => {
       players: Array.isArray(room.players) ? room.players.slice() : [],
       members: Array.isArray(room.members) ? room.members.slice() : [],
       game: room.game && typeof room.game === "object" ? room.game : null,
+      chat: Array.isArray(room.chat) ? room.chat.slice() : [],
     };
   }
 
@@ -70,6 +72,7 @@ const BunkerRooms = (() => {
     state.players = normalized.players;
     state.members = normalized.members;
     state.game = normalized.game;
+    state.chat = normalized.chat;
 
     const me = state.members.find((m) => m.clientId === state.clientId);
     state.isHost = Boolean(me && me.isHost);
@@ -81,6 +84,7 @@ const BunkerRooms = (() => {
         players: state.players.slice(),
         members: state.members.slice(),
         game: state.game,
+        chat: state.chat.slice(),
         isHost: state.isHost,
         username: state.username,
       });
@@ -104,6 +108,7 @@ const BunkerRooms = (() => {
     state.members = [];
     state.players = [];
     state.game = null;
+    state.chat = [];
     state.isHost = false;
   }
 
@@ -250,6 +255,13 @@ const BunkerRooms = (() => {
     return getState();
   }
 
+  async function sendMessage(message) {
+    const text = String(message || "").trim();
+    if (!text) throw new Error("Введите сообщение");
+
+    return gameAction("sendMessage", { message: text });
+  }
+
   function getState() {
     return {
       connected: state.connected,
@@ -260,6 +272,7 @@ const BunkerRooms = (() => {
       members: state.members.slice(),
       players: state.players.slice(),
       game: state.game,
+      chat: state.chat.slice(),
       isHost: state.isHost,
     };
   }
@@ -280,6 +293,7 @@ const BunkerRooms = (() => {
     setReady,
     startGameSession,
     gameAction,
+    sendMessage,
     getState,
   };
 })();

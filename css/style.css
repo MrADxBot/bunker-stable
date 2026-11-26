@@ -312,6 +312,39 @@ body {
   gap: 0.5rem;
 }
 
+.room-chat-panel { display: none; }
+.room-chat-panel.connected { display: block; }
+.room-chat-messages {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.room-chat-message {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.room-chat-message:last-child { border-bottom: 0; }
+.room-chat-message strong { color: var(--accent); }
+.room-chat-form {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+.room-chat-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
 /* ---- Buttons ---- */
 .btn {
   display: inline-flex;
@@ -777,6 +810,7 @@ body {
   margin-bottom: 1.5rem;
 }
 @media (max-width: 600px) {
+  .room-chat-form { flex-direction: column; }
   .attributes-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 400px) {
